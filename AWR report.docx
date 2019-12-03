@@ -1,0 +1,2007 @@
+啥是AWR?
+
+=====================================================================================================
+
+ 
+
+AWR (Automatic Workload Repository)
+
+一堆历史性能数据，放在SYSAUX表空间上， AWR和SYSAUX都是10g出现的，是Oracle调优的关键特性；大约1999年左右开始开发，已经有15年历史
+
+默认快照间隔1小时，10g保存7天、11g保存8天;可以通过DBMS_WORKLOAD_REPOSITORY.MODIFY_SNAPSHOT_SETTINGS修改
+
+DBA_HIST_WR_CONTROL
+
+AWR程序核心是dbms_workload_repository包
+
+@?/rdbms/admin/awrrpt   本实例
+
+@?/rdbms/admin/awrrpti  RAC中选择实例号
+
+ 
+
+ 
+
+ 
+
+谁维护AWR?
+
+ 
+
+ 
+
+主要是MMON(Manageability Monitor Process)和它的小工进程(m00x)
+
+MMON的功能包括:
+1.启动slave进程m00x去做AWR快照
+2.当某个度量阀值被超过时发出alert告警
+3.为最近改变过的SQL对象捕获指标信息
+
+ 
+
+ 
+
+AWR小技巧
+
+ 
+
+ 
+
+手动执行一个快照：
+
+Exec dbms_workload_repository.create_snapshot;(这个要背出来哦，用的时候去翻手册，丢脸哦 J!)
+
+创建一个AWR基线
+
+ExecDBMS_WORKLOAD_REPOSITORY.CREATE_BASELINE(start_snap_id，end_snap_id,baseline_name);
+
+@?/rdbms/admin/awrddrpt    AWR比对报告
+
+@?/rdbms/admin/awrgrpt      RAC 全局AWR
+
+自动生成AWR HTML报告：
+
+http://www.oracle-base.com/dba/10g/generate_multiple_awr_reports.sql
+
+ 
+
+ 
+
+ 
+
+1、报告总结
+
+ 
+
+ 
+
+ 
+
+WORKLOAD REPOSITORY report for
+
+DB Name         DB Id    Instance     Inst Num Startup Time    Release     RAC
+------------ ----------- ------------ -------- --------------- ----------- ---
+MAC           2629627371 askmaclean.com            1 22-Jan-13 16:49 11.2.0.3.0  YES
+
+Host Name        Platform                         CPUs Cores Sockets Memory(GB)
+---------------- -------------------------------- ---- ----- ------- ----------
+MAC10            AIX-Based Systems (64-bit)        128    32             320.00
+
+              Snap Id      Snap Time      Sessions Curs/Sess
+            --------- ------------------- -------- ---------
+Begin Snap:      5853 23-Jan-13 15:00:56     3,520       1.8
+  End Snap:      5854 23-Jan-13 15:30:41     3,765       1.9
+   Elapsed:               29.75 (mins)
+   DB Time:            7,633.76 (mins)
+ 
+
+ 
+
+ 
+
+Elapsed为该AWR性能报告的时间跨度(自然时间的跨度，例如前一个快照snapshot是4点生成的，后一个快照snapshot是6点生成的，则若使用@?/rdbms/admin/awrrpt脚本中指定这2个快照的话，那么其elapsed = (6-4)=2 个小时)，一个AWR性能报告 至少需要2个AWRsnapshot性能快照才能生成 ( 注意这2个快照时间 实例不能重启过，否则指定这2个快照生成AWR性能报告会报错)，AWR性能报告中的 指标往往是 后一个快照和前一个快照的 指标的delta，这是因为累计值并不能反映某段时间内的系统workload。
+
+ 
+
+ 
+
+DB TIME= 所有前台session花费在database调用上的总和时间：
+
+注意是前台进程foreground sessions
+包括CPU时间、IO Time、和其他一系列非空闲等待时间，别忘了cpu on queue time
+DB TIME 不等于 响应时间，DB TIME高了未必响应慢，DB TIME低了未必响应快
+
+DB Time描绘了数据库总体负载，但要和elapsed time逝去时间结合其他来。
+
+Average Active Session AAS= DB time/Elapsed Time
+DB Time =60 min ， Elapsed Time =60 min AAS=60/60=1 负载一般
+DB Time= 1min , Elapsed Time= 60 min AAS= 1/60 负载很轻
+DB Time= 60000 min，Elapsed Time= 60 min AAS=1000 系统hang了吧？
+
+ 
+
+ 
+
+DB TIME= DB CPU + Non-Idle Wait +  Wait on CPUqueue
+
+ 
+
+如果仅有2个逻辑CPU，而2个session在60分钟都没等待事件，一直跑在CPU上，那么：
+
+ 
+
+DB CPU= 2 * 60 mins  ， DB Time = 2* 60 + 0 + 0=120
+
+AAS = 120/60=2  正好等于OS load 2。
+
+如果有3个session都100%仅消耗CPU，那么总有一个要wait on queue
+
+DB CPU = 2* 60 mins  ，wait on CPU queue= 60mins
+
+AAS= (120+ 60)/60=3 主机load 亦为3，此时vmstat 看waiting for run time
+
+ 
+
+真实世界中？  DB Cpu = xx mins ， Non-Idle Wait= enq:TX +cursor pin S on X + latch : xxx + db file sequential read + ………..阿猫阿狗
+
+ 
+
+ 
+
+ 1-1 内存参数大小
+
+ 
+
+ 
+
+Cache Sizes                       Begin        End
+~~~~~~~~~~~                  ---------- ----------
+               Buffer Cache:    49,152M    49,152M  Std Block Size:         8K
+           Shared Pool Size:    13,312M    13,312M      Log Buffer:   334,848K
+ 
+
+ 
+
+内存管理方式：MSMM、ASMM(sga_target)、AMM(memory_target)
+
+ 
+
+小内存有小内存的问题， 大内存有大内存的麻烦！ ORA-04031???!!
+
+ 
+
+Buffer cache和shared pool size的 begin/end值在ASMM、AMM和11gR2MSMM下可是会动的哦！
+
+ 
+
+这里说 shared pool一直收缩，则在shrink过程中一些row cache 对象被lock住可能导致前台row cachelock等解析等待，最好别让shared pool shrink。如果这里shared pool一直在grow，那说明sharedpool原有大小不足以满足需求(可能是大量硬解析)，结合下文的解析信息和SGA breakdown来一起诊断问题。
+
+ 
+
+ 
+
+1-2   LoadProfile
+
+ 
+
+ 
+
+Load Profile              Per Second    Per Transaction   Per Exec   Per Call
+~~~~~~~~~~~~         ---------------    --------------- ---------- ----------
+      DB Time(s):              256.6                0.2       0.07       0.03
+       DB CPU(s):                3.7                0.0       0.00       0.00
+       Redo size:        1,020,943.0              826.5
+   Logical reads:          196,888.0              159.4
+   Block changes:            6,339.4                5.1
+  Physical reads:            5,076.7                4.1
+ Physical writes:              379.2                0.3
+      User calls:           10,157.4                8.2
+          Parses:              204.0                0.2
+     Hard parses:                0.9                0.0
+W/A MB processed:                5.0                0.0
+          Logons:                1.7                0.0
+        Executes:            3,936.6                3.2
+       Rollbacks:            1,126.3                0.9
+    Transactions:            1,235.3
+
+  % Blocks changed per Read:   53.49    Recursive Call %:    98.04
+ Rollback per transaction %:   36.57       Rows per Sort:    73.70
+ 
+
+ 
+
+ 
+
+ 
+
+ 
+
+指标	指标含义
+redo size	单位 bytes，redosize可以用来估量update/insert/delete的频率，大的redosize往往对lgwr写日志，和arch归档造成I/O压力， PerTransaction可以用来分辨是  大量小事务， 还是少量大事务。如上例每秒redo 约1MB，每个事务800 字节，符合OLTP特征
+Logical Read	单位  次数*块数， 相当于 “人*次”，如上例  196,888 * db_block_size=1538MB/s ，逻辑读耗CPU，主频和CPU核数都很重要，逻辑读高则DB CPU往往高，也往往可以看到latch: cache bufferchains等待。 大量OLTP系统(例如siebel)可以高达几十乃至上百Gbytes。
+Block changes	单位 次数*块数 ， 描绘数据变化频率
+Physical Read	单位次数*块数， 如上例 5076 * 8k = 39MB/s，物理读消耗IO读，体现在IOPS和吞吐量等不同纬度上；但减少物理读可能意味着消耗更多CPU。好的存储每秒物理读能力达到几GB，例如Exadata。  这个physicalread包含了physical reads cache和physical reads direct
+Physical writes	单位 次数*块数，主要是DBWR写datafile，也有direct path write。 dbwr长期写出慢会导致定期log fileswitch(checkpoint no complete) 检查点无法完成的前台等待。 这个physical write 包含了physical writes direct +physical writes fromcache
+User Calls	单位次数，用户调用数，more details from internal
+Parses	解析次数，包括软解析+硬解析，软解析优化得不好，则夸张地说几乎等于每秒SQL执行次数。即执行解析比1:1，而我们希望的是 解析一次 到处运行哦！
+Hard Parses	万恶之源．　Cursor pin s on X， library cache: mutex X ，latch: row cache objects /shared pool……………..。 硬解析最好少于每秒20次
+W/A MB processed	单位MB  W/Aworkarea  workarea中处理的数据数量
+结合 In-memory Sort%， sorts (disk) PGA Aggr一起看
+Logons	登陆次数， logon storm登陆风暴，结合AUDIT审计数据一起看。短连接的附带效应是游标缓存无用
+Executes	执行次数，反应执行频率
+Rollback	回滚次数， 反应回滚频率， 但是这个指标不太精确，参考而已，别太当真
+Transactions	每秒事务数，是数据库层的TPS，可以看做压力测试或比对性能时的一个指标，孤立看无意义
+% Blocks changed per Read	每次逻辑读导致数据块变化的比率；如果’redo size’, ‘block changes’ ‘pctof blocks changed perread’三个指标都很高，则说明系统正执行大量insert/update/delete;
+pct of blocks changed per read =  (block changes )/( logical reads)
+Recursive Call %	递归调用的比率;Recursive Call % = (recursive calls)/(usercalls)
+Rollback per transaction %	事务回滚比率。  Rollback per transaction%= (rollback)/(transactions)
+Rows per Sort	平均每次排序涉及到的行数 ;  Rows per Sort= (sorts(rows) ) / ( sorts(disk) + sorts(memory))
+ 
+
+注意这些Load Profile 负载指标 在本环节提供了 2个维度 per second 和 pertransaction。
+
+per Second:   主要是把 快照内的delta值除以 快站时间的秒数 ， 例如 在A快照中V$SYSSTAT视图反应 table scans (long tables) 这个指标是100 ，在B快照中V$SYSSTAT视图反应 table scans (long tables)这个指标是 3700, 而A快照和B快照 之间 间隔了一个小时 3600秒，  则 对于  table scans(long tables) per second  就是 ( 3700- 100) /3600=1。
+
+pert Second是我们审视数据的主要维度 ，任何性能数据脱离了 时间模型则毫无意义。
+
+在statspack/AWR出现之前 的调优 洪荒时代， 有很多DBA 依赖 V$SYSSTAT等视图中的累计统计信息来调优，以当前的调优眼光来看，那无异于刀耕火种。
+
+ 
+
+per transaction  :  基于事务的维度， 与persecond相比 是把除数从时间的秒数改为了该段时间内的事务数。 这个维度的很大用户是用来 识别应用特性的变化，若2个AWR性能报告中该维度指标 出现了大幅变化，例如 redo size从本来per transaction 1k变化为  10k pertransaction，则说明SQL业务逻辑肯定发生了某些变化。
+
+ 
+
+注意AWR中的这些指标 并不仅仅用来孤立地了解 Oracle数据库负载情况， 实施调优工作。  对于 故障诊断 例如HANG、Crash等， 完全可以通过对比问题时段的性能报告和常规时间来对比，通过各项指标的对比往往可以找出病灶所在。
+
+ 
+
+SELECT VALUE FROM DBA_HIST_SYSSTAT WHERE SNAP_ID = :B4 AND DBID = :B3 AND INSTANCE_NUMBER = :B2 AND STAT_NAME  in ( "db block changes","user calls","user rollbacks","user commits",redo size","physical reads direct","physical writes","parse count (hard)","parse count (total)","session logical reads","recursive calls","redo log space requests","redo entries","sorts (memory)","sorts (disk)","sorts (rows)","logons cumulative","parse time cpu","parse time elapsed","execute count","logons current","opened cursors current","DBWR fusion writes","gcs messages sent","ges messages sent","global enqueue gets sync","global enqueue get time","gc cr blocks received","gc cr block receive time","gc current blocks received","gc current block receive time","gc cr blocks served","gc cr block build time","gc cr block flush time","gc cr block send time","gc current blocks served","gc current block pin time","gc current block flush time","gc current block send time","physical reads","physical reads direct (lob)",
+
+SELECT TOTAL_WAITS FROM DBA_HIST_SYSTEM_EVENT WHERE SNAP_ID = :B4 AND DBID = :B3 AND INSTANCE_NUMBER = :B2 AND EVENT_NAME in ("gc buffer busy","buffer busy waits"
+
+SELECT VALUE FROM DBA_HIST_SYS_TIME_MODEL WHERE DBID = :B4 AND SNAP_ID = :B3 AND INSTANCE_NUMBER = :B2 AND STAT_NAME  in  ("DB CPU","sql execute elapsed time","DB time"
+
+SELECT VALUE FROM DBA_HIST_PARAMETER WHERE SNAP_ID = :B4 AND DBID = :B3 AND INSTANCE_NUMBER = :B2 AND PARAMETER_NAME  in ("__db_cache_size","__shared_pool_size","sga_target","pga_aggregate_target","undo_management","db_block_size","log_buffer","timed_statistics","statistics_level"
+
+SELECT BYTES FROM DBA_HIST_SGASTAT WHERE SNAP_ID = :B4 AND DBID = :B3 AND INSTANCE_NUMBER = :B2 AND POOL IN ('shared pool', 'all pools') AND NAME  in ("free memory",
+
+SELECT BYTES FROM DBA_HIST_SGASTAT WHERE SNAP_ID = :B4 AND DBID = :B3 AND INSTANCE_NUMBER = :B2 AND NAME = :B1 AND POOL IS NULL
+
+SELECT (E.BYTES_PROCESSED - B.BYTES_PROCESSED) FROM DBA_HIST_PGA_TARGET_ADVICE B, DBA_HIST_PGA_TARGET_ADVICE E WHERE B.DBID = :B4 AND B.SNAP_ID = :B3 AND B.INSTANCE_NUM
+BER = :B2 AND B.ADVICE_STATUS = 'ON' AND E.DBID = B.DBID AND E.SNAP_ID = :B1 AND E.INSTANCE_NUMBER = B.INSTANCE_NUMBER AND E.PGA_TARGET_FACTOR = 1 AND B.PGA_TARGET_FACT
+OR = 1 AND E.ADVICE_STATUS = 'ON'
+
+SELECT SUM(E.TOTAL_WAITS - NVL(B.TOTAL_WAITS, 0)) FROM DBA_HIST_SYSTEM_EVENT B, DBA_HIST_SYSTEM_EVENT E WHERE B.SNAP_ID(+) = :B4 AND E.SNAP_ID = :B3 AND B.DBID(+) = :B2
+AND E.DBID = :B2 AND B.INSTANCE_NUMBER(+) = :B1 AND E.INSTANCE_NUMBER = :B1 AND B.EVENT_ID(+) = E.EVENT_ID AND (E.EVENT_NAME = 'latch free' OR E.EVENT_NAME LIKE 'latch
+:%')
+
+SELECT DECODE(B.TOTAL_SQL, 0, 0, 100*(1-B.SINGLE_USE_SQL/B.TOTAL_SQL)), DECODE(E.TOTAL_SQL, 0, 0, 100*(1-E.SINGLE_USE_SQL/E.TOTAL_SQL)), DECODE(B.TOTAL_SQL_MEM, 0, 0, 1
+00*(1-B.SINGLE_USE_SQL_MEM/B.TOTAL_SQL_MEM)), DECODE(E.TOTAL_SQL_MEM, 0, 0, 100*(1-E.SINGLE_USE_SQL_MEM/E.TOTAL_SQL_MEM)) FROM DBA_HIST_SQL_SUMMARY B, DBA_HIST_SQL_SUMM
+ARY E WHERE B.SNAP_ID = :B4 AND E.SNAP_ID = :B3 AND B.INSTANCE_NUMBER = :B2 AND E.INSTANCE_NUMBER = :B2 AND B.DBID = :B1 AND E.DBID = :B1
+
+SELECT EVENT, WAITS, TIME, DECODE(WAITS, NULL, TO_NUMBER(NULL), 0, TO_NUMBER(NULL), TIME/WAITS*1000) AVGWT, PCTWTT, WAIT_CLASS FROM (SELECT EVENT, WAITS, TIME, PCTWTT,
+WAIT_CLASS FROM (SELECT E.EVENT_NAME EVENT, E.TOTAL_WAITS - NVL(B.TOTAL_WAITS,0) WAITS, (E.TIME_WAITED_MICRO - NVL(B.TIME_WAITED_MICRO,0)) / 1000000 TIME, 100 * (E.TIME
+_WAITED_MICRO - NVL(B.TIME_WAITED_MICRO,0)) / :B1 PCTWTT, E.WAIT_CLASS WAIT_CLASS FROM DBA_HIST_SYSTEM_EVENT B, DBA_HIST_SYSTEM_EVENT E WHERE B.SNAP_ID(+) = :B5 AND E.S
+NAP_ID = :B4 AND B.DBID(+) = :B3 AND E.DBID = :B3 AND B.INSTANCE_NUMBER(+) = :B2 AND E.INSTANCE_NUMBER = :B2 AND B.EVENT_ID(+) = E.EVENT_ID AND E.TOTAL_WAITS > NVL(B.TO
+TAL_WAITS,0) AND E.WAIT_CLASS != 'Idle' UNION ALL SELECT 'CPU time' EVENT, TO_NUMBER(NULL) WAITS, :B6 /1000000 TIME, 100 * :B6 / :B1 PCTWTT, NULL WAIT_CLASS FROM DUAL W
+HERE :B6 > 0) ORDER BY TIME DESC, WAITS DESC) WHERE ROWNUM <= :B7
+
+SELECT SUM(E.TIME_WAITED_MICRO - NVL(B.TIME_WAITED_MICRO,0)) FROM DBA_HIST_SYSTEM_EVENT B, DBA_HIST_SYSTEM_EVENT E WHERE B.SNAP_ID(+) = :B4 AND E.SNAP_ID = :B3 AND B.DB
+ID(+) = :B2 AND E.DBID = :B2 AND B.INSTANCE_NUMBER(+) = :B1 AND E.INSTANCE_NUMBER = :B1 AND B.EVENT_ID(+) = E.EVENT_ID AND E.WAIT_CLASS = 'User I/O'
+
+SELECT (E.ESTD_LC_TIME_SAVED - B.ESTD_LC_TIME_SAVED) FROM DBA_HIST_SHARED_POOL_ADVICE B, DBA_HIST_SHARED_POOL_ADVICE E WHERE B.DBID = :B3 AND B.INSTANCE_NUMBER = :B2 AN
+D B.SNAP_ID = :B4 AND E.DBID = :B3 AND E.INSTANCE_NUMBER = :B2 AND E.SNAP_ID = :B1 AND E.SHARED_POOL_SIZE_FACTOR = 1 AND B.SHARED_POOL_SIZE_FACTOR = 1
+ 
+
+ 
+
+ 1-3 Instance Efficiency Percentages (Target100%)
+
+ 
+
+ 
+
+ 
+
+Instance Efficiency Percentages (Target 100%)
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+            Buffer Nowait %:   99.97       Redo NoWait %:  100.00
+            Buffer  Hit   %:   97.43    In-memory Sort %:  100.00
+            Library Hit   %:   99.88        Soft Parse %:   99.58
+         Execute to Parse %:   94.82         Latch Hit %:   99.95
+Parse CPU to Parse Elapsd %:    1.75     % Non-Parse CPU:   99.85
+ 
+
+ 
+
+ 
+
+上述所有指标 的目标均为100%，即越大越好，在少数bug情况下可能超过100%或者为负值。
+
+ 
+
+80%以上  %Non-Parse CPU
+90%以上  Buffer Hit%, In-memory Sort%, SoftParse%
+95%以上  Library Hit%, Redo Nowait%, BufferNowait%
+98%以上  Latch Hit%
+ 
+
+1、 Buffer Nowait % session申请一个buffer(兼容模式)不等待的次数比例。需要访问buffer时立即可以访问的比率，  不兼容的情况 在9i中是 buffer busywaits，从10g以后 buffer busy waits 分离为 buffer busywait 和 read by other session2个等待事件 :
+
+ 
+
+ 
+
+9i 中 waitstat的总次数基本等于buffer busy waits等待事件的次数
+
+SQL> select sum(TOTAL_WAITS) from v$system_event where event='buffer busy waits';
+SUM(TOTAL_WAITS)
+—————-
+33070394
+
+SQL> select sum(count) from v$waitstat;
+SUM(COUNT)
+———-
+33069335
+
+10g waitstat的总次数基本等于 buffer busy waits 和  read by other session 等待的次数总和
+
+SQL> select sum(TOTAL_WAITS) from v$system_event where event='buffer busy waits' or event='read by other session';
+SUM(TOTAL_WAITS)
+—————-
+60675815
+
+SQL> select sum(count) from v$waitstat;
+
+SUM(COUNT)
+———-
+60423739
+ 
+
+ 
+
+ 
+
+Buffer Nowait %的计算公式是 sum(v$waitstat.wait_count) / (v$sysstatstatistic session logical reads)，例如在AWR中：
+
+ 
+
+ 
+
+Class	Waits	Total Wait Time (s)	Avg Time (ms)
+data block	24,543	2,267	92
+undo header	743	2	3
+undo block	1,116	0	0
+1st level bmb	35	0	0
+ 
+
+session logical reads	40,769,800	22,544.84	204.71
+ 
+
+Buffer Nowait %:	99.94
+ 
+
+ 
+
+Buffer Nowait=(  40,769,800 – (24543+743+1116+35))/ (40,769,800) = 0.99935= 99.94%
+
+ 
+
+SELECT SUM(WAIT_COUNT) FROM DBA_HIST_WAITSTAT WHERE SNAP_ID = :B3AND DBID = :B2 AND INSTANCE_NUMBER = :B1
+
+ 
+
+ 
+
+2、buffer HIT%: 经典的经典，高速缓存命中率，反应物理读和缓存命中间的纠结，但这个指标即便99%也不能说明物理读等待少了
+
+不合理的db_cache_size，或者是SGA自动管理ASMM /Memory自动管理AMM下都可能因为db_cache_size过小引起大量的db file sequential /scatteredread等待事件； maclean曾经遇到过因为大量硬解析导致ASMM 下shared pool共享池大幅度膨胀，而dbcache相应缩小shrink的例子，最终db cache收缩到只有几百兆，本来没有的物理读等待事件都大幅涌现出来 。
+
+此外与 buffer HIT%相关的指标值得关注的还有 table scans(long tables)大表扫描这个统计项目、此外相关的栏目还有Buffer Pool Statistics 、Buffer PoolAdvisory等（如果不知道在哪里，直接找一个AWR 去搜索这些关键词即可)。
+
+ 
+
+ 
+
+buffer HIT%在 不同版本有多个计算公式：
+
+在9i中
+
+Buffer Hit Ratio = 1 – ((physical reads – physical reads direct –physical reads direct (lob)) / (db block gets + consistent gets –physical reads direct – physical reads direct (lob))
+
+在10g以后：
+
+Buffer Hit Ratio=  1 – ((‘physical reads cache’) /(‘consistent gets from cache’ + ‘db block gets from cache’)
+
+注意：但是实际AWR中似乎还是按照9i中的算法，虽然算法的区别对最后算得的比率影响不大。
+
+对于buffer hit %看它的命中率有多高没有意义，主要是关注未命中的次数有多少。通过上述公式很容易反推出未命中的物理读的次数。
+
+db block gets 、consistent gets 以及 session logical reads的关系如下：
+
+db block gets＝db block gets direct＋　db block gets from cache
+
+consistent gets　＝　consistent gets from cache＋　consistent getsdirect
+
+consistent gets from cache＝　consistent gets –examination  + else
+
+consistent gets – examination==>指的是不需要pin buffer直接可以执行consistentget的次数，常用于索引，只需要一次latch get
+
+ 
+
+session logical reads = db block gets +consistent gets
+
+ 
+
+其中physical reads 、physical reads cache、physical readsdirect、physical reads direct (lob)几者的关系为：
+
+physical reads = physical reads cache +　physical reads direct
+
+这个公式其实说明了 物理读有2种 ：
+
+物理读进入buffer cache中 ，是常见的模式 physical reads cache
+物理读直接进入PGA 直接路径读， 即physical reads direct
+ 
+
+physicalreads	8	Total number of datablocks read from disk. This value can be greater than the value of“physical reads direct” plus “physical reads cache” as reads intoprocess private buffers also included in this statistic.
+physical readscache	8	Total number of datablocks read from disk into the buffer cache. This is a subset of“physical reads” statistic.
+physical readsdirect	8	Number of readsdirectly from disk, bypassing the buffer cache. For example, inhigh bandwidth, data-intensive operations such as parallel query,reads of disk blocks bypass the buffer cache to maximize transferrates and to prevent the premature aging of shared data blocksresident in the buffer cache.
+ 
+
+ 
+
+physical reads direct = physical reads direct(lob) + physical reads direct temporary tablespace+  physical reads direct(普通)
+
+这个公式也说明了 直接路径读 分成三个部分：
+
+physical reads direct (lob) 直接路径读LOB对象
+physical reads direct temporary tablespace 直接路径读临时表空间
+physical read direct(普通)  普通的直接路径读， 一般是11g开始的自动的大表direct path read和并行引起的direct path read
+ 
+
+physical writes direct= physical writes direct (lob)+ physicalwrites direct temporary tablespace
+
+DBWR checkpoint buffers written = DBWR thread checkpoint bufferswritten+ DBWR tablespace checkpoint buffers written+ DBWR PQtablespace checkpoint buffers written+….
+
+ 
+
+3、Redo nowait%: session在生成redo entry时不用等待的比例，redo相关的资源争用例如redospace request争用可能造成生成redo时需求等待。此项数据来源于v$sysstat中的(redo log spacerequests/redo entries)。 一般来说10g以后不太用关注log_buffer参数的大小，需要关注是否有十分频繁的log switch ； 过小的redo logfile size 如果配合较大的SGA和频繁的commit提交都可能造成该问题。考虑增到redo logfile 的尺寸 : 1~4G 每个，7~10组都是合适的。同时考虑优化redologfile和datafile 的I/O。
+
+ 
+
+ 
+
+4、In-memory Sort%:这个指标因为它不计算workarea中所有的操作类型，所以现在越来越鸡肋了。纯粹在内存中完成的排序比例。数据来源于v$sysstat statistics sorts (disk) 和 sorts(memory)，  In-memory Sort% = sort(memory) / ( sort(disk)+ sort(memory) )
+
+ 
+
+5、
+
+Library Hit%:  library cache命中率，申请一个library cacheobject例如一个SQL cursor时，其已经在library cache中的比例。 数据来源 V$librarycache的pins和pinhits。合理值：>95%      ，该比例来源于1- ( Σ(pin Requests * Pct Miss) / Sum(Pin Requests) )
+
+ 
+
+ 
+
+维护这个指标的重点是 保持sharedpool共享池有足够的Free Memory，且没有过多的内存碎片，具体可以参考这里。 显然过小的shared pool可用空间会导致library cache object被aged out换出共享池。
+
+ 
+
+此外保证SQL语句绑定变量和游标可以共享也是很重要的因素。
+
+ 
+
+ 
+
+Library Cache Activity                DB/Inst: G10R25/G10R25  Snaps: 2964-2965
+-> "Pct Misses"  should be very low  http://www.askmaclean.com
+
+                         Get    Pct            Pin    Pct             Invali-
+Namespace           Requests   Miss       Requests   Miss    Reloads  dations
+--------------- ------------ ------ -------------- ------ ---------- --------
+BODY                       5    0.0              6   16.7          1        0
+CLUSTER                   10    0.0             26    0.0          0        0
+SQL AREA             601,357   99.8        902,828   99.7         47        2
+TABLE/PROCEDURE           83    9.6        601,443    0.0         48        0
+ 
+
+GETS	NUMBER	Number of times a lockwas requested for objects of this namespace
+GETHITS	NUMBER	Number of times anobject’s handle was found in memory
+GETHITRATIO	NUMBER	Ratioof GETHITS to GETS
+PINS	NUMBER	Number of times a PINwas requested for objects of this namespace
+PINHITS	NUMBER	Number of times all ofthe metadata pieces of the library object were found in memory
+PINHITRATIO	NUMBER	Ratioof PINHITS to PINS
+RELOADS	NUMBER	Any PIN ofan object that is not the first PIN performedsince the object handle was created, and which requires loading theobject from disk
+INVALIDATIONS	NUMBER	Total number of timesobjects in this namespace were marked invalid because a dependentobject was modified
+ 
+
+SELECT SUM(PINS), SUM(PINHITS) FROM DBA_HIST_LIBRARYCACHE WHERESNAP_ID = :B3 AND DBID = :B2 AND INSTANCE_NUMBER = :B1
+
+ 
+
+6、
+
+Soft Parse: 软解析比例，无需多说的经典指标，数据来源v$sysstat statistics的parsecount(total)和parse count(hard)。 合理值>95%
+
+Soft Parse %是AWR中另一个重要的解析指标，该指标反应了快照时间内 软解析次数 和 总解析次数 (soft+hard软解析次数+硬解析次数)的比值，若该指标很低，那么说明了可能存在剧烈的hardparse硬解析，大量的硬解析会消耗更多的CPU时间片并产生解析争用(此时可以考虑使用cursor_sharing=FORCE)；理论上我们总是希望 Soft Parse % 接近于100%，但并不是说100%的软解析就是最理想的解析状态，通过设置 session_cached_cursors参数和反复重用游标我们可以让解析来的更轻量级，即通俗所说的利用会话缓存游标实现的软软解析(softsoft parse)。
+
+ 
+
+7、
+
+Execute  to Parse% 指标反映了执行解析比 其公式为1-(parse/execute) , 目标为100% 及接近于只 执行而不解析。 数据来源v$sysstat statisticsparse count (total) 和execute count
+
+在oracle中解析往往是执行的先提工作，但是通过游标共享 可以解析一次 执行多次， 执行解析可能分成多种场景：
+
+hard coding => 硬编码代码 硬解析一次 ，执行一次， 则理论上其执行解析比 为 1:1 ，则理论上Executeto Parse =0 极差，且soft parse比例也为0%
+绑定变量但是仍软解析=》 软解析一次，执行一次 ， 这种情况虽然比前一种好但是执行解析比(这里的parse，包含了软解析和硬解析)仍是1:1， 理论上Execute to Parse =0 极差，但是soft parse比例可能很高
+使用 静态SQL、动态绑定、session_cached_cursor、open cursors等技术实现的 解析一次，执行多次，执行解析比为N:1， 则 Execute to Parse= 1- (1/N) 执行次数越多 Execute toParse越接近100% ，这种是我们在OLTP环境中喜闻乐见的！
+通俗地说 soft parse% 反映了软解析率， 而软解析在oracle中仍是较昂贵的操作，我们希望的是解析1次执行N次，如果每次执行均需要软解析，那么虽然soft parse%=100% 但是parsetime仍可能是消耗DB TIME的大头。
+
+Execute to Parse反映了 执行解析比，Execute to Parse和soft parse% 都很低那么说明确实没有绑定变量 ， 而如果 soft parse% 接近99% 而Execute to Parse 不足90%则说明没有执行解析比低， 需要通过 静态SQL、动态绑定、session_cached_cursor、opencursors等技术减少软解析。
+
+ 
+
+8、
+
+Latch Hit%: willing-to-wait latch闩申请不要等待的比例。 数据来源V$latchgets和misses
+
+ 
+
+ 
+
+Latch Name
+----------------------------------------
+  Get Requests      Misses      Sleeps  Spin Gets   Sleep1   Sleep2   Sleep3
+-------------- ----------- ----------- ---------- -------- -------- --------
+shared pool
+     9,988,637         364          23        341        0        0        0
+library cache
+     6,753,468         152           6        146        0        0        0
+Memory Management Latch
+           369           1           1          0        0        0        0
+qmn task queue latch
+            24           1           1          0        0        0        0
+ 
+
+ 
+
+Latch Hit%:=  (1 – (Sum(misses) / Sum(gets)))
+
+关于Latch的更多信息内容可以参考 AWR后面的专栏Latch Statistics，注意对于一个并发设计良好的OLTP应用来说，Latch、Enqueue等并发控制不应当成为系统的主要瓶颈， 同时对于这些并发争用而言堆积硬件CPU和内存 很难有效改善性能。
+
+SELECT SUM(GETS), SUM(MISSES) FROM DBA_HIST_LATCH WHERE SNAP_ID =:B3 AND DBID = :B2 AND INSTANCE_NUMBER = :B1
+
+9、
+
+Parse CPU To Parse Elapsd:该指标反映了 快照内解析CPU时间和总的解析时间的比值(Parse CPUTime/ Parse Elapsed Time)； 若该指标水平很低，那么说明在整个解析过程中实际在CPU上运算的时间是很短的，而主要的解析时间都耗费在各种其他非空闲的等待事件上了(如latch:shared pool,rowcache lock之类等)   数据来源 V$sysstat 的parse time cpu和parse time elapsed
+
+ 
+
+10、
+
+%Non-Parse CPU 非解析cpu比例，公式为  (DB CPU – ParseCPU)/DB CPU，  若大多数CPU都用在解析上了，则可能好钢没用在刃上了。 数据来源v$sysstat 的 parse time cpu和 cpu used by this session
+
+ 
+
+ 
+
+ 
+
+ 1-4   Shared PoolStatistics
+
+ 
+
+ 
+
+ Shared Pool Statistics        Begin    End
+                              ------  ------
+             Memory Usage %:   84.64   79.67
+    % SQL with executions>1:   93.77   24.69
+  % Memory for SQL w/exec>1:   85.36   34.8
+ 
+
+ 
+
+该环节提供一个大致的SQL重用及shared pool内存使用的评估。 应用是否共享SQL?有多少内存是给只运行一次的SQL占掉的，对比共享SQL呢？
+
+如果该环节中% SQL with executions>1的 比例 小于� ， 考虑用下面链接的SQL去抓硬编码的非绑定变量SQL语句。
+
+利用FORCE_MATCHING_SIGNATURE捕获非绑定变量SQL
+
+Memory Usage%:    (sharedpool 的实时大小- shared pool free memory)/ shared pool 的实时大小， 代表sharedpool的空间使用率，虽然有使用率但没有标明碎片程度
+
+% SQL with executions>1     复用的SQL占总的SQL语句的比率,数据来源DBA_HIST_SQL_SUMMARY 的 SINGLE_USE_SQL和TOTAL_SQL：1 – SINGLE_USE_SQL/ TOTAL_SQL
+
+% Memory for SQL w/exec>1  执行2次以上的SQL所占内存占总的SQL内存的比率，数据来源DBA_HIST_SQL_SUMMARY的SINGLE_USE_SQL_MEM和TOTAL_SQL_MEM：1 – SINGLE_USE_SQL_MEM /TOTAL_SQL_MEM
+
+==》上面2个指标也可以用来大致了解shared pool中的内存碎片程序，因为SINGLE_USE_SQL单次执行的SQL多的话，那么显然可能有较多的共享池内存碎片
+
+SQL复用率低的原因一般来说就是硬绑定变量(hard Coding)未合理使用绑定变量(bindvariable)，对于这种现象短期无法修改代表使用绑定变量的可以ALTER SYSTEM SETCURSOR_SHARING=FORCE;来绕过问题，对于长期来看还是要修改代码绑定变量。   Oracle从11g开始宣称今后将废弃CURSOR_SHARING的SIMILAR选项，同时SIMILAR选项本身也造成了很多问题，所以一律不推荐用CURSOR_SHARING=SIMILAR。
+
+如果memory usage%比率一直很高，则可以关注下后面sga breakdown中的shared pool freememory大小，一般推荐至少让free memroy有个300~500MB 以避免隐患。
+
+ 
+
+ 
+
+1-5 Top 5 Timed Events
+
+ 
+
+ 
+
+Top 5 Timed Events                                         Avg %Total
+~~~~~~~~~~~~~~~~~~                                        wait   Call
+Event                                 Waits    Time (s)   (ms)   Time Wait Class
+------------------------------ ------------ ----------- ------ ------ ----------
+gc buffer busy                       79,083      73,024    923   65.4    Cluster
+enq: TX - row lock contention        35,068      17,123    488   15.3 Applicatio
+CPU time                                         12,205          10.9           
+gc current request                    2,714       3,315   1221    3.0    Cluster
+gc cr multi block request            83,666       1,008     12    0.9    Cluster
+ 
+
+ 
+
+基于Wait Interface的调优是目前的主流！每个指标都重要！
+
+基于命中比例的调优，好比是统计局的报告， 张财主家财产100万，李木匠家财产1万， 平均财产50.5万。
+
+基于等待事件的调优，好比马路上100辆汽车的行驶记录表，上车用了几分钟， 红灯等了几分钟，拥堵塞了几分钟。。。
+
+丰富的等待事件以足够的细节来描绘系统运行的性能瓶颈，这是Mysql梦寐以求的东西……
+
+ 
+
+Waits : 该等待事件发生的次数， 对于DB CPU此项不可用
+
+Times : 该等待事件消耗的总计时间，单位为秒， 对于DB CPU 而言是前台进程所消耗CPU时间片的总和，但不包括Wait onCPU QUEUE
+
+Avg Wait(ms)  :  该等待事件平均等待的时间，实际就是  Times/Waits，单位ms， 对于DB CPU此项不可用
+
+% Total Call Time， 该等待事件占总的call time的比率
+
+total call time  =  total CPUtime + total wait time for non-idle events
+
+% Total Call Time  =  time foreach timed event / total call time
+
+Wait Class: 等待类型：
+
+Concurrency,System I/O,UserI/O,Administrative,Other,Configuration,Scheduler,Cluster,Application,Idle,Network,Commit
+
+ 
+
+ 
+
+ 
+
+CPU 上在干什么？
+
+逻辑读？ 解析？Latch spin? PL/SQL、函数运算?
+
+DB CPU/CPU time是Top 1 是好事情吗？  未必！
+
+注意DB CPU不包含 wait on cpu queue！
+
+ 
+
+ 
+
+  SELECT e.event_name event,
+         e.total_waits - NVL (b.total_waits, 0) waits,
+         DECODE (
+            e.total_waits - NVL (b.total_waits, 0),
+            0, TO_NUMBER (NULL),
+            DECODE (
+               e.total_timeouts - NVL (b.total_timeouts, 0),
+               0, TO_NUMBER (NULL),
+                 100
+               * (e.total_timeouts - NVL (b.total_timeouts, 0))
+               / (e.total_waits - NVL (b.total_waits, 0))))
+            pctto,
+         (e.time_waited_micro - NVL (b.time_waited_micro, 0)) / 1000000 time,
+         DECODE (
+            (e.total_waits - NVL (b.total_waits, 0)),
+            0, TO_NUMBER (NULL),
+            ( (e.time_waited_micro - NVL (b.time_waited_micro, 0)) / 1000)
+            / (e.total_waits - NVL (b.total_waits, 0)))
+            avgwt,
+         DECODE (e.wait_class, 'Idle', 99, 0) idle
+    FROM dba_hist_system_event b, dba_hist_system_event e
+   WHERE     b.snap_id(+) = &bid
+         AND e.snap_id = &eid
+         --AND b.dbid(+) = :dbid
+         --AND e.dbid = :dbid
+         AND b.instance_number(+) = 1
+         AND e.instance_number = 1
+         AND b.event_id(+) = e.event_id
+         AND e.total_waits > NVL (b.total_waits, 0)
+         AND e.event_name NOT IN
+                ('smon timer',
+                 'pmon timer',
+                 'dispatcher timer',
+                 'dispatcher listen timer',
+                 'rdbms ipc message')
+ORDER BY idle,
+         time DESC,
+         waits DESC,
+         event
+ 
+
+ 
+
+ 
+
+几种常见的等待事件
+
+=========================>
+
+ 
+
+db file scatteredread,  Avg wait time应当小于20ms 如果数据库执行全表扫描或者是全索引扫描会执行 Multi block I/O ，此时等待物理I/O结束会出现此等待事件。一般会从应用程序（SQL），I/O 方面入手调整; 注意和《Instance ActivityStats》中的index fast full scans (full) 以及 table scans (longtables)集合起来一起看。
+
+ 
+
+db file sequential read ，该等待事件Avg wait time平均单次等待时间应当小于20ms
+
+”db file sequentialread”单块读等待是一种最为常见的物理IO等待事件，这里的sequential指的是将数据块读入到相连的内存空间中(contiguousmemory space)，而不是指所读取的数据块是连续的。该wait event可能在以下情景中发生:
+
+http://www.askmaclean.com/archives/db-file-sequential-read-wait-event.html
+
+ 
+
+latch free　　其实是未获得latch ，而进入latchsleep，见《全面解析9i以后Oracle Latch闩锁原理》
+
+ 
+
+ 
+
+enq:XX          队列锁等待，视乎不同的队列锁有不同的情况：
+
+ 
+
+ 
+
+你有多了解OracleEnqueue lock队列锁机制？
+Oracle队列锁:Enqueue HW
+Oracle队列锁enq:US,Undo Segment
+enq: TX – rowlock/index contention、allocate ITL等待事件
+enq: TT –contention等待事件
+Oracle队列锁enq:TS,Temporary Segment (alsoTableSpace)
+enq: JI –contention等待事件
+enq: US –contention等待事件
+enq: TM –contention等待事件
+enq: RO fastobject reuse等待事件
+enq: HW –contention等待事件
+ 
+
+ 
+
+free buffer waits：是由于无法找到可用的buffer cache 空闲区域，需要等待DBWR 写入完成引起
+
+ 
+
+ 
+
+一般是由于
+低效的sql
+过小的buffer cache
+DBWR 工作负荷过量
+ 
+
+ 
+
+buffer busy wait/ read by other session 一般以上2个等待事件可以归为一起处理，建议客户都进行监控 。 以上等待时间可以由如下操作引起
+
+select/select —- read by other session: 由于需要从 数据文件中将数据块读入 buffercache 中引起，有可能是 大量的 逻辑/物理读  ;或者过小的 buffer cache引起
+select/update —- buffer busy waits/ read by othersession  是由于更新某数据块后 需要在undo 中 重建构建 过去时间的块，有可能伴生enq:cr-contention 是由于大量的物理读/逻辑读造成。
+update/update —- buffer busy waits由于更新同一个数据块（非同一行，同一行是enq:TX-contention） 此类问题是热点块造成
+insert/insert —- buffer busy waits  是由于freelist争用造成，可以将表空间更改为ASSM 管理 或者加大freelist 。
+ 
+
+ 
+
+write complete waits :一般此类等待事件是由于 DBWR 将脏数据写入 数据文件，其他进程如果需要修改buffer cache会引起此等待事件，一般是 I/O 性能问题或者是DBWR 工作负荷过量引起
+
+Wait time  1 Seconds.
+
+ 
+
+ 
+
+control file parallelwrite：频繁的更新控制文件会造成大量此类等待事件，如日志频繁切换，检查点经常发生，nologging引起频繁的数据文件更改，I/O 系统性能缓慢。
+
+ 
+
+ 
+
+log file sync：一般此类等待时间是由于 LGWR 进程讲redo log buffer 写入redo log中发生。如果此类事件频繁发生，可以判断为：
+
+commit 次数是否过多
+I/O 系统问题
+重做日志是否不必要被创建
+redo log buffer 是否过大
+ 
+
+ 
+
+ 
+
+ 2-1 Time ModelStatistics
+
+ 
+
+ 
+
+Time Model Statistics             DB/Inst: ITSCMP/itscmp2  Snaps: 70719-70723
+-> Total time in database user-calls (DB Time): 883542.2s
+-> Statistics including the word "background" measure background process
+   time, and so do not contribute to the DB time statistic
+-> Ordered by % or DB time desc, Statistic name
+
+Statistic Name                                       Time (s) % of DB Time
+------------------------------------------ ------------------ ------------
+sql execute elapsed time                            805,159.7         91.1
+sequence load elapsed time                           41,159.2          4.7
+DB CPU                                               20,649.1          2.3
+parse time elapsed                                    1,112.8           .1
+hard parse elapsed time                                 995.2           .1
+hard parse (sharing criteria) elapsed time              237.3           .0
+hard parse (bind mismatch) elapsed time                 227.6           .0
+connection management call elapsed time                  29.7           .0
+PL/SQL execution elapsed time                             9.2           .0
+PL/SQL compilation elapsed time                           6.6           .0
+failed parse elapsed time                                 2.0           .0
+repeated bind elapsed time                                0.4           .0
+DB time                                             883,542.2
+background elapsed time                              25,439.0
+background cpu time                                   1,980.9
+          -------------------------------------------------------------
+ 
+
+Time Model Statistics几个特别有用的时间指标：
+
+ 
+
+parse time elapsed、hard parse elapsed time结合起来看解析是否是主要矛盾，若是则重点是软解析还是硬解析
+sequence load elapsed time sequence序列争用是否是问题焦点
+PL/SQL compilation elapsed time PL/SQL对象编译的耗时
+注意PL/SQL execution elapsed time 纯耗费在PL/SQL解释器上的时间。不包括花在执行和解析其包含SQL上的时间
+connection management call elapsed time 建立数据库session连接和断开的耗时
+failed parse elapsed time 解析失败，例如由于ORA-4031
+hard parse (sharing criteria) elapsed time 由于无法共享游标造成的硬解析
+hard parse (bind mismatch) elapsed time  由于bindtype or bind size 不一致造成的硬解析
+ 
+
+注意该时间模型中的指标存在包含关系所以Time ModelStatistics加起来超过100%再正常不过
+
+ 
+
+ 
+
+1) background elapsed time
+    2) background cpu time
+          3) RMAN cpu time (backup/restore)
+1) DB time
+    2) DB CPU
+    2) connection management call elapsed time
+    2) sequence load elapsed time
+    2) sql execute elapsed time
+    2) parse time elapsed
+          3) hard parse elapsed time
+                4) hard parse (sharing criteria) elapsed time
+                    5) hard parse (bind mismatch) elapsed time
+          3) failed parse elapsed time
+                4) failed parse (out of shared memory) elapsed time
+    2) PL/SQL execution elapsed time
+    2) inbound PL/SQL rpc elapsed time
+    2) PL/SQL compilation elapsed time
+    2) Java execution elapsed time
+    2) repeated bind elapsed time
+ 
+
+ 
+
+ 
+
+2-2 Foreground Wait Class
+
+ 
+
+ 
+
+ 
+
+Foreground Wait Class             
+-> s  - second, ms - millisecond -    1000th of a second
+-> ordered by wait time desc, waits desc
+-> %Timeouts: value of 0 indicates value was < .5%.  Value of null is truly 0 
+-> Captured Time accounts for        102.7%  of Total DB time     883,542.21 (s)
+-> Total FG Wait Time:           886,957.73 (s)  DB CPU time:      20,649.06 (s)
+
+                                                                  Avg
+                                      %Time       Total Wait     wait
+Wait Class                      Waits -outs         Time (s)     (ms)  � time
+-------------------- ---------------- ----- ---------------- -------- ---------
+Cluster                     9,825,884     1          525,134       53      59.4
+Concurrency                   688,375     0          113,782      165      12.9
+User I/O                   34,405,042     0           76,695        2       8.7
+Commit                        172,193     0           62,776      365       7.1
+Application                    11,422     0           57,760     5057       6.5
+Configuration                  19,418     1           48,889     2518       5.5
+DB CPU                                                20,649                2.3
+Other                       1,757,896    94              924        1       0.1
+System I/O                     30,165     0              598       20       0.1
+Network                   171,955,673     0              400        0       0.0
+Administrative                      2   100                0      101       0.0
+          -------------------------------------------------------------
+
+select distinct wait_class from v$event_name;
+
+WAIT_CLASS
+----------------------------------------------------------------
+Concurrency
+User I/O
+System I/O
+Administrative
+Other
+Configuration
+Scheduler
+Cluster
+Application
+Queueing
+Idle
+Network
+Commit
+ 
+
+ 
+
+Wait Class: 等待事件的类型，如上查询所示，被分作12个类型。 10.2.0.5有916个等待事件，其中Other类型占622个。
+Waits:  该类型所属等待事件在快照时间内的等待次数
+%Time Out  等待超时的比率， 未 超时次数/waits * 100 (%)
+Total Wait Time: 该类型所属等待事件总的耗时，单位为秒
+Avg Wait(ms) : 该类型所属等待事件的平均单次等待时间，单位为ms ，实际这个指标对commit 和 user i/o以及system i/o类型有点意义，其他等待类型由于等待事件差异较大所以看平均值的意义较小
+waits / txn:  该类型所属等待事件的等待次数和事务比
+ 
+
+Other 类型，遇到该类型等待事件 的话 常见的原因是Oracle Bug或者 网络、I/O存在问题，一般推荐联系Maclean。
+
+Concurrency 类型  并行争用类型的等待事件，  典型的如 latch: shared pool、latch:library cache、row cache lock、library cache pin/lock
+
+Cluster 类型  为Real Application Cluster RAC环境中的等待事件，需要注意的是 如果启用了RAC option，那么即使你的集群中只启动了一个实例，那么该实例也可能遇到 Cluster类型的等待事件,例如gc buffer busy
+
+System I/O  主要是后台进程维护数据库所产生的I/O，例如control fileparallel write 、log file parallel write、db file parallel write。
+
+User I/O   主要是前台进程做了一些I/O操作，并不是说后台进程不会有这些等待事件。 典型的如db filesequential/scattered  read、direct path read
+
+Configuration  由于配置引起的等待事件，  例如日志切换的log file switch completion (日志文件 大小/数目 不够)，sequence的enq: SQ –contention (Sequence 使用nocache) ；Oracle认为它们是由于配置不当引起的，但实际未必真是这样的配置引起的。
+
+Application  应用造成的等待事件， 例如enq: TM –contention和enq: TX – row lock contention；Oracle认为这是由于应用设计不当造成的等待事件， 但实际这些Application class 等待可能受到Concurrency、Cluster、System I/O 、User I/O等多种类型等待的影响，例如本来commit只要1ms，则某一行数据仅被锁定1ms， 但由于commit变慢 从而释放行锁变慢，引发大量的enq: TX – row lockcontention等待事件。
+
+ 
+
+Commit  仅log file sync ，log filesync的影响十分广泛，值得我们深入讨论。
+
+ 
+
+Network :  网络类型的等待事件 例如 SQL*Net more data toclient  、SQL*Net more data to dblink
+
+Idle 空闲等待事件 ，最为常见的是rdbms ipc message(等待实例内部的ipc通信才干活，即别人告知我有活干，我才干，否则我休息==》Idle)， SQL*Net message fromclient(等待SQL*NET传来信息，否则目前没事干)
+
+ 
+
+ 
+
+ 2-3前台等待事件
+
+ 
+
+ 
+
+Foreground Wait Events          Snaps: 70719-70723
+-> s  - second, ms - millisecond -    1000th of a second
+-> Only events with Total Wait Time (s) >= .001 are shown
+-> ordered by wait time desc, waits desc (idle events last)
+-> %Timeouts: value of 0 indicates value was < .5%.  Value of null is truly 0
+
+                                                             Avg
+                                        %Time Total Wait    wait    Waits   % DB
+Event                             Waits -outs   Time (s)    (ms)     /txn   time
+-------------------------- ------------ ----- ---------- ------- -------- ------
+gc buffer busy acquire        3,274,352     3    303,088      93     13.3   34.3
+gc buffer busy release          387,673     2    128,114     330      1.6   14.5
+enq: TX - index contention      193,918     0     97,375     502      0.8   11.0
+cell single block physical   30,738,730     0     63,606       2    124.8    7.2
+log file sync                   172,193     0     62,776     365      0.7    7.1
+gc current block busy           146,154     0     53,027     363      0.6    6.0
+enq: TM - contention              1,060     0     47,228   44555      0.0    5.3
+enq: SQ - contention             17,431     0     35,683    2047      0.1    4.0
+gc cr block busy                105,204     0     33,746     321      0.4    3.8
+buffer busy waits               279,721     0     12,646      45      1.1    1.4
+enq: HW - contention              1,201     3     12,192   10151      0.0    1.4
+enq: TX - row lock content        9,231     0     10,482    1135      0.0    1.2
+cell multiblock physical r      247,903     0      6,547      26      1.0     .7
+ 
+
+Foreground Wait Events 前台等待事件，数据主要来源于DBA_HIST_SYSTEM_EVENT
+
+Event 等待事件名字
+
+Waits  该等待事件在快照时间内等待的次数
+
+%Timeouts :  每一个等待事件有其超时的设置，例如buffer busy waits一般为3秒， Write Complete Waits的 timeout为1秒，如果等待事件单次等待达到timeout的时间，则会进入下一次该等待事件
+
+Total Wait Time  该等待事件 总的消耗的时间 ，单位为秒
+
+Avg wait(ms): 该等待事件的单次平均等待时间，单位为毫秒
+
+Waits/Txn: 该等待事件的等待次数和事务比
+
+ 
+
+ 
+
+ 
+
+ 2-4后台等待事件
+
+ 
+
+ 
+
+Background Wait Events              Snaps: 70719-70723
+-> ordered by wait time desc, waits desc (idle events last)
+-> Only events with Total Wait Time (s) >= .001 are shown
+-> %Timeouts: value of 0 indicates value was < .5%.  Value of null is truly 0
+
+                                                             Avg
+                                        %Time Total Wait    wait    Waits   % bg
+Event                             Waits -outs   Time (s)    (ms)     /txn   time
+-------------------------- ------------ ----- ---------- ------- -------- ------
+db file parallel write           90,979     0      7,831      86      0.4   30.8
+gcs log flush sync            4,756,076     6      4,714       1     19.3   18.5
+enq: CF - contention              2,123    40      4,038    1902      0.0   15.9
+control file sequential re       90,227     0      2,380      26      0.4    9.4
+log file parallel write         108,383     0      1,723      16      0.4    6.8
+control file parallel writ        4,812     0        988     205      0.0    3.9
+Disk file operations I/O         26,216     0        731      28      0.1    2.9
+flashback log file write          9,870     0        720      73      0.0    2.8
+LNS wait on SENDREQ             202,747     0        600       3      0.8    2.4
+ASM file metadata operatio       15,801     0        344      22      0.1    1.4
+cell single block physical       39,283     0        341       9      0.2    1.3
+LGWR-LNS wait on channel        183,443    18        203       1      0.7     .8
+gc current block busy               122     0        132    1082      0.0     .5
+gc buffer busy release               60    12        127    2113      0.0     .5
+Parameter File I/O                  592     0        116     195      0.0     .5
+log file sequential read          1,804     0        104      58      0.0     .4
+ 
+
+ 
+
+Background Wait Events 后台等待事件， 数据主要来源于DBA_HIST_BG_EVENT_SUMMARY
+
+ 
+
+Event 等待事件名字
+
+Waits  该等待事件在快照时间内等待的次数
+
+%Timeouts :  每一个等待事件有其超时的设置，例如buffer busy waits一般为3秒， Write Complete Waits的 timeout为1秒，如果等待事件单次等待达到timeout的时间，则会进入下一次该等待事件
+
+Total Wait Time  该等待事件 总的消耗的时间 ，单位为秒
+
+Avg wait(ms): 该等待事件的单次平均等待时间，单位为毫秒
+
+Waits/Txn: 该等待事件的等待次数和事务比
+
+ 
+
+ 
+
+ 2-5          Operating System Statistics
+
+ 
+
+ 
+
+Operating System Statistics         Snaps: 70719-70723
+TIME statistic values are diffed.
+   All others display actual values.  End Value is displayed if different
+-> ordered by statistic type (CPU Use, Virtual Memory, Hardware Config), Name
+
+Statistic                                  Value        End Value
+------------------------- ---------------------- ----------------
+BUSY_TIME                              2,894,855
+IDLE_TIME                              5,568,240
+IOWAIT_TIME                               18,973
+SYS_TIME                                 602,532
+USER_TIME                              2,090,082
+LOAD                                           8               13
+VM_IN_BYTES                                    0
+VM_OUT_BYTES                                   0
+PHYSICAL_MEMORY_BYTES            101,221,343,232
+NUM_CPUS                                      24
+NUM_CPU_CORES                                 12
+NUM_CPU_SOCKETS                                2
+GLOBAL_RECEIVE_SIZE_MAX                4,194,304
+GLOBAL_SEND_SIZE_MAX                   2,097,152
+TCP_RECEIVE_SIZE_DEFAULT                  87,380
+TCP_RECEIVE_SIZE_MAX                   4,194,304
+TCP_RECEIVE_SIZE_MIN                       4,096
+TCP_SEND_SIZE_DEFAULT                     16,384
+TCP_SEND_SIZE_MAX                      4,194,304
+TCP_SEND_SIZE_MIN                          4,096
+          -------------------------------------------------------------
+ 
+
+Operating System Statistics  操作系统统计信息
+
+ 
+
+数据来源于V$OSSTAT  /DBA_HIST_OSSTAT，,  TIME相关的指标单位均为百分之一秒
+
+ 
+
+统计项	描述
+NUM_CPU_SOCKETS	物理CPU的数目
+NUM_CPU_CORES	CPU的核数
+NUM_CPUS	逻辑CPU的数目
+SYS_TIME	在内核态被消耗掉的CPU时间片，单位为百分之一秒
+USER_TIME	在用户态被消耗掉的CPU时间片，单位为百分之一秒
+BUSY_TIME	Busy_Time=SYS_TIME+USER_TIME消耗的CPU时间片，单位为百分之一秒
+AVG_BUSY_TIME	AVG_BUSY_TIME= BUSY_TIME/NUM_CPUS
+IDLE_TIME	空闲的CPU时间片，单位为百分之一秒
+所有CPU所能提供总的时间片	BUSY_TIME + IDLE_TIME = ELAPSED_TIME *CPU_COUNT
+OS_CPU_WAIT_TIME	进程等OS调度的时间，cpu queuing
+VM_IN_BYTES	换入页的字节数
+VM_OUT_BYTES	换出页的字节数，部分版本下并不准确，例如Bug 11712010 Abstract: VIRTUALMEMORY PAGING ON 11.2.0.2 DATABASES，仅供参考
+IOWAIT_TIME	所有CPU花费在等待I/O完成上的时间  单位为百分之一秒
+RSRC_MGR_CPU_WAIT_TIME	是指当resourcemanager控制CPU调度时，需要控制对应进程暂时不使用CPU而进程到内部运行队列中，以保证该进程对应的consumergroup(消费组)没有消耗比指定resourcemanager指令更多的CPU。RSRC_MGR_CPU_WAIT_TIME指等在内部运行队列上的时间，在等待时不消耗CPU
+ 
+
+ 
+
+2-6 Service Statistcs
+
+ 
+
+ 
+
+Service Statistics                 Snaps: 70719-70723
+-> ordered by DB Time
+
+                                                           Physical      Logical
+Service Name                  DB Time (s)   DB CPU (s)    Reads (K)    Reads (K)
+---------------------------- ------------ ------------ ------------ ------------
+itms-contentmasterdb-prod         897,099       20,618       35,668    1,958,580
+SYS$USERS                           4,312          189        5,957       13,333
+itmscmp                             1,941          121       14,949       18,187
+itscmp                                331           20          114          218
+itscmp_dgmgrl                         121            1            0            0
+SYS$BACKGROUND                          0            0          142       30,022
+ITSCMP1_PR                              0            0            0            0
+its-reference-prod                      0            0            0            0
+itscmpXDB                               0            0            0            0
+ 
+
+ 
+
+按照Service Name来分组时间模型和 物理、逻辑读取， 部分数据来源于 WRH$_SERVICE_NAME;
+
+Service Name  对应的服务名 (v$services)， SYS$BACKGROUND代表后台进程， SYS$USERS一般是系统用户登录
+
+DB TIME (s):  本服务名所消耗的DB TIME时间，单位为秒
+
+DB CPU(s):  本服务名所消耗的DB CPU 时间，单位为秒
+
+Physical Reads : 本服务名所消耗的物理读
+
+Logical Reads : 本服务所消耗的逻辑读
+
+ 
+
+ 
+
+ 
+
+2-7  ServiceWait Class Stats
+
+ 
+
+ 
+
+Service Wait Class Stats            Snaps: 70719-70723
+-> Wait Class info for services in the Service Statistics section.
+-> Total Waits and Time Waited displayed for the following wait
+   classes:  User I/O, Concurrency, Administrative, Network
+-> Time Waited (Wt Time) in seconds
+
+Service Name
+----------------------------------------------------------------
+ User I/O  User I/O  Concurcy  Concurcy     Admin     Admin   Network   Network
+Total Wts   Wt Time Total Wts   Wt Time Total Wts   Wt Time Total Wts   Wt Time
+--------- --------- --------- --------- --------- --------- --------- ---------
+itms-contentmasterdb-prod
+ 33321670     71443    678373    113759         0         0 1.718E+08       127
+SYS$USERS
+   173233      3656      6738        30         2         0     72674         3
+itmscmp
+   676773      1319      1831         0         0         0      2216         0
+itscmp
+   219577       236      1093         0         0         0     18112         0
+itscmp_dgmgrl
+       34         0         8         0         0         0         9         0
+SYS$BACKGROUND
+    71940      1300    320677        56         0         0    442252       872
+          -------------------------------------------------------------
+ 
+
+ 
+
+User I/O Total Wts : 对应该服务名下 用户I/O类等待的总的次数
+User I/O Wt Time : 对应该服务名下 用户I/O累等待的总时间，单位为 1/100秒
+Concurcy Total Wts: 对应该服务名下 Concurrency 类型等待的总次数
+Concurcy Wt Time :对应该服务名下 Concurrency 类型等待的总时间， 单位为 1/100秒
+Admin Total Wts: 对应该服务名下Admin 类等待的总次数
+Admin Wt Time: 对应该服务名下Admin类等待的总时间，单位为 1/100秒
+Network Total Wts : 对应服务名下Network类等待的总次数
+Network Wt Time： 对应服务名下Network类等待的总事件， 单位为 1/100秒
+ 
+
+2-8 HostCPU 
+
+ 
+
+Host CPU (CPUs:   24 Cores:   12 Sockets:    2)
+~~~~~~~~         Load Average
+               Begin       End     %User   %System      %WIO     %Idle
+           --------- --------- --------- --------- --------- ---------
+                8.41     12.84      24.7       7.1       0.2      65.8
+ 
+
+“Load Average” begin/end值代表每个CPU的大致运行队列大小。上例中快照开始到结束，平均 CPU负载增加了；与《2-5 OperatingSystem Statistics》中的LOAD相呼应。
+
+ 
+
+%User+%System=> 总的CPU使用率，在这里是31.8%
+
+ 
+
+Elapsed Time * NUM_CPUS * CPU utilization= 60.23(mins)  * 24 * 31.8% = 459.67536 mins=BusyTime
+
+ 
+
+ 
+
+2-8 InstanceCPU 
+
+ 
+
+Instance CPU
+~~~~~~~~~~~~
+              % of total CPU for Instance:      26.7
+              % of busy  CPU for Instance:      78.2
+  � time waiting for CPU - Resource Mgr:       0.0
+%Total CPU,该实例所使用的CPU占总CPU的比例  % of total CPU forInstance
+
+%Busy CPU，该实例所使用的Cpu占总的被使用CPU的比例  % of busy CPUfor Instance
+
+例如共4个逻辑CPU，其中3个被完全使用，3个中的1个完全被该实例使用，则%Total CPU= ¼ =25%，而%Busy CPU=1/3= 33%
+
+当CPU高时一般看%Busy CPU可以确定CPU到底是否是本实例消耗的，还是主机上其他程序
+
+% of busy CPU for Instance= （DB CPU+ background cpu time) /(BUSY_TIME /100)= (20,649.1  + 1,980.9)/(2,894,855 /100)= 78.17%
+
+% of Total CPU for Instance = ( DB CPU+ background cpu time)/(BUSY_TIME+IDLE_TIME/100) = (20,649.1  + 1,980.9)/((2,894,855+5,568,240) /100) = 26.73%
+
+� time waiting for CPU (Resource Manager)=(RSRC_MGR_CPU_WAIT_TIME/100)/DB TIME
+
+ 
+
+ 
+
+3 TOP SQL
+
+ 
+
+TOP SQL 的数据部分来源于 dba_hist_sqlstat
+
+ 
+
+3-1 SQL ordered by Elapsed Time，按照SQL消耗的时间来排列TOP SQL
+
+ 
+
+ 
+
+SQL ordered by Elapsed Time        Snaps: 70719-70723
+-> Resources reported for PL/SQL code includes the resources used by all SQL
+   statements called by the code.
+-> % Total DB Time is the Elapsed Time of the SQL statement divided
+   into the Total Database Time multiplied by 100
+-> %Total - Elapsed Time  as a percentage of Total DB time
+-> %CPU   - CPU Time      as a percentage of Elapsed Time
+-> %IO    - User I/O Time as a percentage of Elapsed Time
+-> Captured SQL account for   53.9% of Total DB Time (s):         883,542
+-> Captured PL/SQL account for    0.5% of Total DB Time (s):         883,542
+
+        Elapsed                  Elapsed Time
+        Time (s)    Executions  per Exec (s)  %Total   %CPU    %IO    SQL Id
+---------------- -------------- ------------- ------ ------ ------ -------------
+       181,411.3         38,848          4.67   20.5     .0     .1 g0yc9szpuu068
+ 
+
+ 
+
+ 
+
+注意对于PL/SQL，SQLStatistics不仅会体现该PL/SQL的执行情况，还会包括该PL/SQL包含的SQL语句的情况。如上例一个TOPPL/SQL执行了448s，而这448s中绝大多数是这个PL/SQL下的一个SQL执行500次耗费的。
+
+则该TOP PL/SQL和TOP SQL都上榜，一个执行一次耗时448s，一个执行500次耗时448s。 如此情况则ElapsedTime加起来可能超过100%的Elapsed Time，这是正常的。
+
+对于鹤立鸡群的SQL很有必要一探究竟，跑个@?/rdbms/admin/awrsqrpt看看吧！
+
+ 
+
+Elapsed Time (s): 该SQL累计运行所消耗的时间，
+
+Executions :  该SQL在快照时间内总计运行的次数   ；  注意， 对于在快照时间内还没有执行完的SQL不计为1一次，所以如果看到executions=0而 又是TOP SQL，则很有可能是因为该SQL运行较旧还没执行完，需要特别关注一下。
+
+ 
+
+ 
+
+Elapsed Time per Exec (s)：平均每次执行该SQL耗费的时间 ，对于OLTP类型的SELECT/INSERT/UPDATE/DELETE而言平均单次执行时间应当非常短，如0.1秒或者更短才能满足其业务需求，如果这类轻微的OLTP操作单次也要几秒钟的话，是无法满足对外业务的需求的；例如你在ATM上提款，并不仅仅是对你的账务库的简单UPDATE，而需要在类似风险控制的前置系统中记录你本次的流水操作记录，实际取一次钱可能要有几十乃至上百个OLTP类型的语句被执行，但它们应当都是十分快速的操作；如果这些操作也变得很慢，则会出现大量事务阻塞，系统负载升高，DB TIME急剧上升的现象。 对于OLTP数据库而言 如果执行计划稳定，那么这些OLTP操作的性能应当是铁板钉钉的，但是一旦某个因素发生变化，例如存储的明显变慢、内存换页的大量出现时则上述的这些transaction操作很可能成数倍到几十倍的变慢，这将让此事务系统短期内不可用。
+
+对于维护操作，例如加载或清除数据，大的跑批次、报表而言 Elapsed Time per Exec (s)高一些是正常的。
+
+%Total  该SQL所消耗的时间占总的DB Time的百分比， 即(SQL Elapsed Time / Total DB TIME)
+
+% CPU   该SQL 所消耗的CPU 时间 占该SQL消耗的时间里的比例， 即 (SQL CPU Time / SQL Elapsed Time)，该指标说明了该语句是否是CPU敏感的
+
+%IO 该SQL 所消耗的I/O 时间 占 该SQL消耗的时间里的比例， 即(SQL I/OTime/SQL Elapsed Time) ，该指标说明了该语句是否是I/O敏感的
+
+SQL Id : 通过计算SQL 文本获得的SQL_ID ，不同的SQL文本必然有不同的SQL_ID， 对于10g~11g而言只要SQL文本不变那么在数据库之间 该SQL 对应的SQL_ID应当不不变的， 12c中修改了SQL_ID的计算方法
+
+ 
+
+Captured SQL account for   53.9%of Total DB Time (s) 对于不绑定变量的应用来说Top SQL有可能失准，所以要参考本项
+
+ 
+
+3-2  SQL orderedby CPU Time
+
+ 
+
+ 
+
+ 
+
+SQL ordered by CPU Time             Snaps: 70719-70723
+-> Resources reported for PL/SQL code includes the resources used by all SQL
+   statements called by the code.
+-> %Total - CPU Time      as a percentage of Total DB CPU
+-> %CPU   - CPU Time      as a percentage of Elapsed Time
+-> %IO    - User I/O Time as a percentage of Elapsed Time
+-> Captured SQL account for   34.9% of Total CPU Time (s):          20,649
+-> Captured PL/SQL account for    0.5% of Total CPU Time (s):          20,649
+
+    CPU                   CPU per           Elapsed
+  Time (s)  Executions    Exec (s) %Total   Time (s)   %CPU    %IO    SQL Id
+---------- ------------ ---------- ------ ---------- ------ ------ -------------
+   1,545.0    1,864,424       0.00    7.5    4,687.8   33.0   65.7 8g6a701j83c8q
+Module: MZIndexer
+SELECT t0.BOOLEAN_VALUE, t0.CLASS_CODE, t0.CREATED, t0.END_DATE, t0.PRODUCT_ATTR
+IBUTE_ID, t0.LAST_MODIFIED, t0.OVERRIDE_FLAG, t0.PRICE, t0.PRODUCT_ATTRIBUTE_TYP
+E_ID, t0.PRODUCT_ID, t0.PRODUCT_PUB_RELEASE_TYPE_ID, t0.PRODUCT_VOD_TYPE_ID, t0.
+SAP_PRODUCT_ID, t0.START_DATE, t0.STRING_VALUE FROM mz_product_attribute t0 WHER
+ 
+
+ 
+
+CPU TIME :   该SQL在快照时间内累计执行所消耗的CPU 时间片，单位为s
+
+Executions :  该SQL在快照时间内累计执行的次数
+
+CPU per Exec (s) ：该SQL 平均单次执行所消耗的CPU时间 ， 即  ( SQL CPU TIME / SQL Executions )
+
+%Total : 该SQL 累计消耗的CPU时间 占  该时段总的 DBCPU的比例，  即 ( SQL CPU TIME / Total DB CPU)
+
+% CPU   该SQL 所消耗的CPU 时间 占该SQL消耗的时间里的比例， 即 (SQL CPU Time / SQL Elapsed Time)，该指标说明了该语句是否是CPU敏感的
+
+%IO 该SQL 所消耗的I/O 时间 占 该SQL消耗的时间里的比例， 即(SQL I/OTime/SQL Elapsed Time) ，该指标说明了该语句是否是I/O敏感的
+
+ 
+
+ 
+
+ 
+
+3-3 Buffer Gets SQL ordered byGets
+
+ 
+
+ 
+
+SQL ordered by Gets               DB/Inst: ITSCMP/itscmp2  Snaps: 70719-70723
+-> Resources reported for PL/SQL code includes the resources used by all SQL
+   statements called by the code.
+-> %Total - Buffer Gets   as a percentage of Total Buffer Gets
+-> %CPU   - CPU Time      as a percentage of Elapsed Time
+-> %IO    - User I/O Time as a percentage of Elapsed Time
+-> Total Buffer Gets:   2,021,476,421
+-> Captured SQL account for   68.2% of Total
+
+     Buffer                 Gets              Elapsed
+      Gets   Executions   per Exec   %Total   Time (s)   %CPU    %IO    SQL Id
+----------- ----------- ------------ ------ ---------- ------ ------ -----------
+4.61155E+08   1,864,424        247.3   22.8    4,687.8   33.0   65.7 8g6a701j83c
+ 
+
+注意 buffer gets 逻辑读是消耗CPU TIME的重要源泉， 但并不是说消耗CPU TIME的只有buffer gets。大多数情况下 SQL order by CPU TIME 和 SQL order by buffers gets 2个部分的TOPSQL 及其排列顺序都是一样的，此种情况说明消耗最多buffer gets的 就是消耗最多CPU 的SQL，如果我们希望降低系统的CPU使用率，那么只需要调优SQL 降低buffer gets 即可。
+
+但也并不是100%的情况都是如此， CPU TIME的消耗者 还包括 函数运算、PL/SQL 控制、Latch /Mutex的Spin等等， 所以SQL order by CPU TIME 和 SQL order by buffers gets2个部分的TOP SQL 完全不一样也是有可能的， 需要因地制宜来探究到底是什么问题导致的High CPU，进而裁度解决之道。
+
+ 
+
+Buffer Gets : 该SQL在快照时间内累计运行所消耗的buffer gets，包括了consistent read 和current read
+
+Executions :  该SQL在快照时间内累计执行的次数
+
+Gets  per Exec : 该SQL平均单次的buffer gets ，对于事务型transaction操作而言 一般该单次buffer gets小于2000
+
+% Total  该SQL 累计运行所消耗的buffer gets占 总的db buffergets的比率， (SQL buffer gets / DB total buffer gets)
+
+ 
+
+ 
+
+ 
+
+3-4  PhysicalReads  SQL ordered by Reads
+
+ 
+
+ 
+
+SQL ordered by Reads              DB/Inst: ITSCMP/itscmp2  Snaps: 70719-70723
+-> %Total - Physical Reads as a percentage of Total Disk Reads
+-> %CPU   - CPU Time      as a percentage of Elapsed Time
+-> %IO    - User I/O Time as a percentage of Elapsed Time
+-> Total Disk Reads:      56,839,035
+-> Captured SQL account for   34.0% of Total
+
+   Physical              Reads              Elapsed
+      Reads  Executions per Exec   %Total   Time (s)   %CPU    %IO    SQL Id
+----------- ----------- ---------- ------ ---------- ------ ------ -------------
+  9,006,163           1 9.0062E+06   15.8      720.9    5.9   80.9 4g36tmp70h185
+Physical reads : 该SQL累计运行所消耗的物理读
+
+Executions :  该SQL在快照时间内累计执行的次数
+
+Reads per Exec : 该SQL 单次运行所消耗的物理读，  (SQL Physicalreads/Executions) ， 对于OLTP transaction 类型的操作而言单次一般不超过100
+
+%Total : 该SQL 累计消耗的物理读 占  该时段总的物理读的比例，  即 ( SQL physical read /  Total DB physical read )
+
+ 
+
+ 
+
+3-5 Executions SQL ordered by Executions
+
+ 
+
+ 
+
+SQL ordered by Executions         Snaps: 70719-70723
+-> %CPU   - CPU Time      as a percentage of Elapsed Time
+-> %IO    - User I/O Time as a percentage of Elapsed Time
+-> Total Executions:      48,078,147
+-> Captured SQL account for   50.4% of Total
+
+                                              Elapsed
+ Executions   Rows Processed  Rows per Exec   Time (s)   %CPU    %IO    SQL Id
+------------ --------------- -------------- ---------- ------ ------ -----------
+   6,327,963      11,249,645            1.8      590.5   47.8   52.7 1avv7759j8r
+ 
+
+按照 执行次数来排序的话，也是性能报告对比时一个重要的参考因素，因为如果TOP SQL的执行次数有明显的增长，那么性能问题的出现也是意料之中的事情了。 当然执行次数最多的，未必便是对性能影响最大的TOP SQL
+
+ 
+
+Executions :  该SQL在快照时间内累计执行的次数
+
+Rows Processed： 该SQL在快照时间内累计执行所处理的总行数
+
+Rows per Exec：　SQL平均单次执行所处理的行数，  这个指标在诊断一些数据问题造成的SQL性能问题时很有用
+
+ 
+
+ 
+
+3-6 ParseCalls    SQL ordered by Parse Calls
+
+ 
+
+ 
+
+SQL ordered by Parse Calls          Snaps: 70719-70723
+-> Total Parse Calls:       2,160,124
+-> Captured SQL account for   58.3% of Total
+
+                            % Total
+ Parse Calls  Executions     Parses    SQL Id
+------------ ------------ --------- -------------
+     496,475      577,357     22.98 d07gaa3wntdff
+ 
+
+ 
+
+ 
+
+Parse Calls : 解析调用次数， 与上文的 Load Profile中的Parse 数一样 包括 软解析softparse和硬解析hard parse
+
+Executions :  该SQL在快照时间内累计执行的次数
+
+%Total Parses : 本SQL 解析调用次数 占 该时段数据库总解析次数的比率， 为 (SQL Parse Calls /Total DB Parse Calls)
+
+ 
+
+ 
+
+3-7  SQL orderedby Sharable Memory
+
+ 
+
+ 
+
+SQL ordered by Sharable Memory     Snaps: 70719-70723
+-> Only Statements with Sharable Memory greater than 1048576 are displayed
+
+Sharable Mem (b)  Executions   % Total    SQL Id
+---------------- ------------ -------- -------------
+       8,468,359           39     0.08 au89sasqfb2yn
+Module: MZContentBridge
+SELECT t0.ASPECT_RATIO, t0.CREATED, t0.FILE_EXTENSION, t0.HEIGHT, t0.VIDEO_FILE_
+DIMENSIONS_ID, t0.LAST_MODIFIED, t0.NAME, t0.WIDTH FROM MZ_VIDEO_FILE_DIMENSIONS
+ t0 WHERE (t0.HEIGHT = :1 AND t0.WIDTH = :2 )
+ 
+
+ 
+
+SQL ordered by Sharable Memory,   一般该部分仅列出Sharable Mem (b)为1 MB以上的SQL 对象 (Only Statements withSharable Memory greater than 1048576 are displayed)  数据来源是 DBA_HIST_SQLSTAT.SHARABLE_MEM
+
+Shareable Mem(b):  SQL 对象所占用的共享内存使用量
+
+Executions :  该SQL在快照时间内累计执行的次数
+
+%Total :  该SQL 对象锁占共享内存 占总的共享内存的比率
+
+ 
+
+ 
+
+3-8   SQLordered by Version Count
+
+ 
+
+Version Count Oracle中的执行计划可以是多版本的，即对于同一个SQL语句有多个不同版本的执行计划，这些执行计划又称作子游标，而一个SQL语句的文本可以称作一个父游标。 一个父游标对应多个子游标，产生不同子游标的原因是SQL在被执行时无法共享之前已经生成的子游标， 原因是多种多样的，例如 在本session中做了一个优化器参数的修改例如optimizer_index_cost_adj 从100 修改到99，则本session的优化环境optimizerenv将不同于之前的子游标生成环境，这样就需要生成一个新的子游标，例如：
+
+ 
+
+ 
+
+SQL> create table emp as select * from scott.emp;
+
+Table created.
+
+SQL> select * from emp where empno=1;
+
+no rows selected
+
+SQL> select  * from emp where empno=1;
+
+no rows selected
+
+SQL> select SQL_ID,version_count from V$SQLAREA WHERE SQL_TEXT like '%MACLEAN%' and SQL_TEXT not like '%like%';
+
+SQL_ID        VERSION_COUNT
+------------- -------------
+bxnnm7z1qmg26             1
+
+SQL> select count(*) from v$SQL where SQL_ID='bxnnm7z1qmg26';
+
+  COUNT(*)
+----------
+         1
+
+SQL> alter session set optimizer_index_cost_adj=99;
+
+Session altered.
+
+SQL> select  * from emp where empno=1;
+
+no rows selected
+
+SQL> select SQL_ID,version_count from V$SQLAREA WHERE SQL_TEXT like '%MACLEAN%' and SQL_TEXT not like '%like%';
+
+SQL_ID        VERSION_COUNT
+------------- -------------
+bxnnm7z1qmg26             2
+
+SQL> select count(*) from v$SQL where SQL_ID='bxnnm7z1qmg26';
+
+  COUNT(*)
+----------
+         2
+
+SQL> select child_number ,OPTIMIZER_ENV_HASH_VALUE,PLAN_HASH_VALUE from v$SQL where SQL_ID='bxnnm7z1qmg26';
+
+CHILD_NUMBER OPTIMIZER_ENV_HASH_VALUE PLAN_HASH_VALUE
+------------ ------------------------ ---------------
+           0               3704128740      3956160932
+           1               3636478958      3956160932
+ 
+
+ 
+
+可以看到上述 演示中修改optimizer_index_cost_adj=99 导致CBO 优化器的优化环境发生变化，表现为不同的OPTIMIZER_ENV_HASH_VALUE，之后生成了2个子游标，但是这2个子游标的PLAN_HASH_VALUE同为3956160932，则说明了虽然是不同的子游标但实际子游标里包含了的执行计划是一样的； 所以请注意 任何一个优化环境的变化 (V$SQL_SHARED_CURSOR)以及相关衍生的BUG都可能导致子游标无法共享，虽然子游标无法共享但这些子游标扔可能包含完全一样的执行计划，这往往是一种浪费。
+
+注意V$SQLAREA.VERSION_COUNT 未必等于select count(*) FROM V$SQL WHERESQL_ID=”  ，即 V$SQLAREA.VERSION_COUNT 显示的子游标数目未必等于当前实例中还存有的子游标数目， 由于shared pool agedout算法和其他一些可能导致游标失效的原因存在，所以子游标被清理掉是很常见的事情。V$SQLAREA.VERSION_COUNT只是一个计数器，它告诉我们曾经生成了多少个childcursor，但不保证这些child 都还在shared pool里面。
+
+此外可以通过v$SQL的child_number字段来分析该问题，如果child_number存在跳号则也说明了部分child被清理了。
+
+ 
+
+ 
+
+子游标过多的影响， 当子游标过多(例如超过3000个时),进程需要去扫描长长的子游标列表child cursorlist以找到一个合适的子游标child cursor，进而导致cursor sharing 性能问题 现大量的Cursor:Mutex S 和 library cache lock等待事件。
+
+关于子游标的数量控制，可以参考《11gR2游标共享新特性带来的一些问题以及_cursor_features_enabled、_cursor_obsolete_threshold和106001event》。
+
+ 
+
+Executions :  该SQL在快照时间内累计执行的次数
+
+ 
+
+Hash Value :  共享SQL 的哈希值
+
+ 
+
+Only Statements with Version Count greater than 20 aredisplayed   注意该环节仅列出version count > 20的语句
+
+ 
+
+ 
+
+ 3-9  Cluster Wait Time SQL ordered by Cluster Wait Time
+
+ 
+
+ 
+
+SQL ordered by Cluster Wait Time  DB/Inst: ITSCMP/itscmp2  Snaps: 70719-70723
+-> %Total - Cluster Time  as a percentage of Total Cluster Wait Time
+-> %Clu   - Cluster Time  as a percentage of Elapsed Time
+-> %CPU   - CPU Time      as a percentage of Elapsed Time
+-> %IO    - User I/O Time as a percentage of Elapsed Time
+-> Only SQL with Cluster Wait Time > .005 seconds is reported
+-> Total Cluster Wait Time (s):         525,480
+-> Captured SQL account for   57.2% of Total
+
+       Cluster                        Elapsed
+ Wait Time (s)   Executions %Total    Time(s)   %Clu   %CPU    %IO    SQL Id
+-------------- ------------ ------ ---------- ------ ------ ------ -------------
+     132,639.3       38,848   25.2  181,411.3   73.1     .0     .1 g0yc9szpuu068
+ 
+
+ 
+
+ 
+
+Only SQL with Cluster Wait Time > .005 seconds isreported  这个环节仅仅列出Cluster Wait Time > 0.005s的SQL
+
+该环节的数据主要来源 于 DBA_HIST_SQLSTAT.CLWAIT_DELTA Delta value of clusterwait time
+
+Cluster Wait Time :  该SQL语句累计执行过程中等待在集群等待上的时间，单位为秒， 你可以理解为 当一个SQL 执行过程中遇到了gc bufferbusy、gc cr multi block request之类的Cluster等待，则这些等待消耗的时间全部算在 Cluster WaitTime里。
+
+Executions :  该SQL在快照时间内累计执行的次数
+
+%Total:  该SQL所消耗的Cluster Wait time 占 总的ClusterWait time的比率， 为(SQL cluster wait time / DB total cluster WaitTime)
+
+%Clu: 该SQL所消耗的Cluster Wait time 占该SQL 总的耗时的比率，为(SQL cluster waittime / SQL elapsed Time),该指标说明了该语句是否是集群等待敏感的
+
+% CPU   该SQL 所消耗的CPU 时间 占该SQL消耗的时间里的比例， 即 (SQL CPU Time / SQL Elapsed Time)，该指标说明了该语句是否是CPU敏感的
+
+%IO 该SQL 所消耗的I/O 时间 占 该SQL消耗的时间里的比例， 即(SQL I/OTime/SQL Elapsed Time) ，该指标说明了该语句是否是I/O敏感的
+
+ 
+
+ 
+
+4 Instance ActivityStats 
+
+ 
+
+ 
+
+Instance Activity Stats           DB/Inst: ITSCMP/itscmp2  Snaps: 70719-70723
+-> Ordered by statistic name
+
+Statistic                                     Total     per Second     per Trans
+-------------------------------- ------------------ -------------- -------------
+Batched IO (bound) vector count             450,449          124.6           1.8
+Batched IO (full) vector count                5,485            1.5           0.0
+Batched IO (space) vector count               1,467            0.4           0.0
+Batched IO block miss count               4,119,070        1,139.7          16.7
+Batched IO buffer defrag count               39,710           11.0           0.2
+Batched IO double miss count                297,357           82.3           1.2
+Batched IO same unit count                1,710,492          473.3           7.0
+Batched IO single block count               329,521           91.2           1.3
+Batched IO slow jump count                   47,104           13.0           0.2
+Batched IO vector block count             2,069,852          572.7           8.4
+Batched IO vector read count                262,161           72.5           1.1
+Block Cleanout Optim referenced              37,574           10.4           0.2
+CCursor + sql area evicted                    1,457            0.4           0.0
+...............
+ 
+
+Instance Activity Stats  的数据来自于DBA_HIST_SYSSTAT，DBA_HIST_SYSSTAT来自于V$SYSSTAT。
+
+这里每一个指标都代表一种数据库行为的活跃度，例如redo size 是指生成redo的量，sorts (disk)是指磁盘排序的次数，table scans (direct read) 是指直接路径扫描表的次数。
+
+虽然这些指标均只有Total、per Second每秒、 per Trans每事务三个维度，但对诊断问题十分有用。
+
+我们来举几个例子：
+
+1、 例如当 Top Event 中存在direct path read为Top 等待事件， 则需要分清楚是对普通堆表的directread还是由于大量LOB读造成的direct path read， 这个问题可以借助 table scans (directread)、table scans (long tables)、physical readsdirect   、physical reads direct(lob) 、physical reads direct temporary几个指标来分析， 假设 physical readsdirect   >> 远大于 physicalreads direct (lob)+physical reads direct temporary ， 且有较大的tablescans (direct read)、table scans (long tables) (注意这2个指标代表的是 扫描表的次数 不同于上面的phsical reads 的单位为 块数*次数)， 则说明了是大表扫描引起的direct path read。
+
+ 
+
+ 
+
+ 
+
+2、 例如当 Top Event中存在enq Tx:index contention等待事件， 则需要分析root nodesplits   、branch nodesplits   、leaf node 90-10splits   、leaf node splits、failed probes on index block rec 几个指标，具体可以见文档《Oracle索引块分裂split信息汇总》
+
+ 
+
+ 
+
+3、系统出现IO类型的等待事件为TOp Five 例如 db file sequential/scattered read，我们需要通过AWR来获得系统IO吞吐量和IOPS:
+
+physical read bytes 主要是应用造成的物理读取(Total size in bytes of all diskreads by application activity (and not other instance activity)only.) 而physical read total bytes则包括了 rman备份恢复和后台维护任务所涉及的物理读字节数，所以我们在研究IO负载时一般参考 physical read totalbytes；以下4对指标均存在上述的关系
+
+ 
+
+ 
+
+physical read bytes	physical read totalbytes	物理读的吞吐量/秒
+physical read IOrequests	physical readtotal IO requests	物理读的IOPS
+physical write bytes	physical writetotal bytes	物理写的吞吐量/秒
+physical write IOrequests	physical writetotal IO requests	物理写的IOPS
+ 
+
+总的物理吞吐量/秒=physical read total bytes+physical write total bytes
+
+总的物理IOPS= physical read total IO requests+ physical write total IOrequests
+
+ 
+
+IO的主要指标 吞吐量、IOPS和延迟 均可以从AWR中获得了， IO延迟的信息可以从 User I/O的Wait Class AvgWait time获得，也可以参考11g出现的IOStat by Function summary
+
+ 
+
+ 
+
+Instance Activity Stats有大量的指标，但是对于这些指标的介绍没有那一份文档有完整详尽的描述，即便在Oracle原厂内部要没有(或者是Maclean没找到)，实际是开发人员要引入某一个ActivityStats是比较容易的，并不像申请引入一个新后台进程那样麻烦，Oracle对于新版本中新后台进程的引入有严格的要求，但ActivityStats却很容易，往往一个one-off patch中就可以引入了，实际上ActivityStats在源代码层仅仅是一些计数器。’
+
+较为基础的statistics，大家可以参考官方文档的StatisticsDescriptions描述，地址在这里。
+
+ 
+
+对于深入的指标 例如  “Batched IO (space) vectorcount”这种由于某些新特性被引入的，一般没有很详细的材料，需要到源代码中去阅读相关模块才能总结其用途，对于这个工作一般原厂是很延迟去完成的，所以没有一个完整的列表。如果大家有对此的疑问，请去t.askmaclean.com 发一个帖子提问。
+
+ 
+
+ 
+
+Instance Activity Stats - Absolute Values  Snaps: 7071
+-> Statistics with absolute values (should not be diffed)
+
+Statistic                            Begin Value       End Value
+-------------------------------- --------------- ---------------
+session pga memory max           1.157882826E+12 1.154290304E+12
+session cursor cache count           157,042,373     157,083,136
+session uga memory               5.496429019E+14 5.496775467E+14
+opened cursors current                   268,916         265,694
+workarea memory allocated                827,704         837,487
+logons current                             2,609           2,613
+session uga memory max           1.749481584E+13 1.749737418E+13
+session pga memory               4.150306913E+11 4.150008177E+11
+ 
+
+ 
+
+ 
+
+ 
+
+Instance Activity Stats – Absolute Values是显示快照 起点 和终点的一些指标的绝对值
+
+logon current 当前时间点的登录数
+opened cursors current 当前打开的游标数
+session cursor cache count 当前存在的session缓存游标数
+ 
+
+ 
+
+ 
+
+ 
+
+Instance Activity Stats - Thread ActivityDB/Inst: G10R25/G10R25  Snaps: 3663-3
+-> Statistics identified by '(derived)' come from sources other than SYSSTAT 
+
+Statistic                                     Total  per Hour  
+-------------------------------- ------------------ ---------  
+log switches (derived)                           17  2,326.47
+ 
+
+ 
+
+log switches (derived) 日志切换次数 ， 见 《理想的在线重做日志切换时间是多长？》
+
+ 
+
+ 
+
+5 IO 统计
+
+ 
+
+5-1 Tablespace IOStats  基于表空间分组的IO信息
+
+ 
+
+ 
+
+ 
+
+Tablespace IO Stats               DB/Inst: ITSCMP/itscmp2  Snaps: 70719-70723
+-> ordered by IOs (Reads + Writes) desc
+
+Tablespace
+------------------------------
+                 Av       Av     Av                       Av     Buffer  Av Buf
+         Reads Reads/s  Rd(ms) Blks/Rd       Writes Writes/s      Waits  Wt(ms)
+-------------- ------- ------- ------- ------------ -------- ---------- -------
+DATA_TS
+    17,349,398   4,801     2.3     1.5      141,077       39  4,083,704     5.8
+INDEX_TS
+     9,193,122   2,544     2.0     1.0      238,563       66  3,158,187    46.1
+UNDOTBS1
+     1,582,659     438     0.7     1.0            2        0     12,431    69.0
+ 
+
+reads : 指 该表空间上发生的物理读的次数(单位不是块，而是次数)
+
+Av Reads/s : 指该表空间上平均每秒的物理读次数 (单位不是块，而是次数)
+
+Av Rd(ms): 指该表空间上每次读的平均读取延迟
+
+ 
+
+Av Blks/Rd: 指该表空间上平均每次读取的块数目，因为一次物理读可以读多个数据块；如果Av Blks/Rd>>1则可能系统有较多db file scattered read 可能是诊断FULL TABLE SCAN或FAST FULL INDEXSCAN，需要关注table scans (long tables) 和index fast full scans(full)   2个指标
+
+ 
+
+Writes : 该表空间上发生的物理写的次数 ;  对于那些Writes总是等于0的表空间不妨了解下是否数据为只读，如果是可以通过read only tablespace来解决 RAC中的一些性能问题。
+
+Av Writes/s  : 指该表空间上平均每秒的物理写次数
+
+buffer Waits:  该表空间上发生buffer busy waits和read byother session的次数( 9i中buffer busy waits包含了read by othersession)。
+
+Av Buf Wt(ms):  该表空间上发生bufferWaits的平均等待时间，单位为ms
+
+ 
+
+ 
+
+ 
+
+ 5-2 FileI/O
+
+ 
+
+ 
+
+File IO Stats                    Snaps: 70719-70723
+-> ordered by Tablespace, File
+
+Tablespace               Filename
+------------------------ ----------------------------------------------------
+                 Av       Av     Av                       Av     Buffer  Av Buf
+         Reads Reads/s  Rd(ms) Blks/Rd       Writes Writes/s      Waits  Wt(ms)
+-------------- ------- ------- ------- ------------ -------- ---------- -------
+AMG_ALBUM_IDX_TS         +DATA/itscmp/plugged/data2/amg_album_idx_ts01.dbf
+        23,298       6     0.6     1.0            2        0          0     0.0
+AMG_ALBUM_IDX_TS         +DATA/itscmp/plugged/data3/amg_album_idx_ts02.dbf
+         3,003       1     0.6     1.0            2        0          0     0.0
+ 
+
+Tablespace 表空间名
+
+FileName  数据文件的路径
+
+Reads: 该数据文件上累计发生过的物理读次数，不是块数
+
+Av Reads/s: 该数据文件上平均每秒发生过的物理读次数，不是块数
+
+Av Rd(ms): 该数据文件上平均每次物理读取的延迟，单位为ms
+
+Av Blks/Rd:  该数据文件上平均每次读取涉及到的块数，OLTP环境该值接近 1
+
+Writes : 该数据文件上累计发生过的物理写次数，不是块数
+
+Av Writes/s: 该数据文件上平均每秒发生过的物理写次数，不是块数
+
+buffer Waits:  该数据文件上发生buffer busy waits和read byother session的次数( 9i中buffer busy waits包含了read by othersession)。
+
+Av Buf Wt(ms):  该数据文件上发生bufferWaits的平均等待时间，单位为ms
+
+ 
+
+若某个表空间上有较高的IO负载，则有必要分析一下 是否其所属的数据文件上的IO 较为均匀 还是存在倾斜， 是否需要结合存储特征来将数据均衡分布到不同磁盘上的数据文件上，以优化 I/O
+
+ 
+
+ 
+
+ 
+
+6 缓冲池统计 Buffer PoolStatistics
+
+ 
+
+ 
+
+ 
+
+Buffer Pool Statistics              Snaps: 70719-70723
+-> Standard block size Pools  D: default,  K: keep,  R: recycle
+-> Default Pools for other block sizes: 2k, 4k, 8k, 16k, 32k
+
+                                                            Free   Writ   Buffer
+     Number of Pool       Buffer     Physical    Physical   Buff   Comp     Busy
+P      Buffers Hit%         Gets        Reads      Writes   Wait   Wait    Waits
+--- ---------- ---- ------------ ------------ ----------- ------ ------ --------
+16k     15,720  N/A            0            0           0      0      0        0
+D    2,259,159   98 2.005084E+09   42,753,650     560,460      0      1 8.51E+06
+ 
+
+该环节的数据主要来源于WRH$_BUFFER_POOL_STATISTICS，而WRH$_BUFFER_POOL_STATISTICS是定期汇总v$SYSSTAT中的数据
+
+ 
+
+P  pool池的名字   D: 默认的缓冲池 defaultbuffer pool  , K : Keep Pool , R: Recycle Pool;  2k 4k 8k  16k 32k:代表各种非标准块大小的缓冲池
+
+Number of buffers:  实际的缓冲块数目，   约等于 池的大小 / 池的块大小
+
+Pool Hit % :  该缓冲池的命中率
+
+Buffer Gets: 对该缓冲池的中块的访问次数 包括  consistent gets 和db block gets
+
+Physical Reads: 该缓冲池Buffer Cache引起了多少物理读， 其实是physical reads cache，单位为 块数*次数
+
+Physical Writes ：该缓冲池中Buffer cache被写的物理写， 其实是physical writes fromcache， 单位为 块数*次数
+
+Free Buffer Waits:  等待空闲缓冲的次数， 可以看做该buffer pool发生free buffer waits 等待的次数
+
+Write Comp Wait:  等待DBWR写入脏buffer到磁盘的次数， 可以看做该buffer pool发生write completewaits等待的次数
+
+Buffer Busy Waits:  该缓冲池发生buffer busy wait等待的次数
