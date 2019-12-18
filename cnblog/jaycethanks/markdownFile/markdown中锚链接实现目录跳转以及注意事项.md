@@ -10,13 +10,13 @@
 ## Demo
 ---
 ### **Table Of Contents**
-**[Installation Instructions](#installation-instructions)**
-**[Usage Instructions](#usage-instructions)**
-**[Troubleshooting](#troubleshooting)**
-**[Compatibility](#compatibility)** 
-**[Notes and Miscellaneous](#notes-and-miscellaneous)** 
-**[Building the Extension Bundles](#building-the-extension-bundles)**
-**[Next Steps, Credits, Feedback, License](#next-steps)**
+**[Installation Instructions](#installation-instructions)**</br>
+**[Usage Instructions](#usage-instructions)**</br>
+**[Troubleshooting](#troubleshooting)**</br>
+**[Compatibility](#compatibility)** </br>
+**[Notes and Miscellaneous](#notes-and-miscellaneous)** </br>
+**[Building the Extension Bundles](#building-the-extension-bundles)**</br>
+**[Next Steps, Credits, Feedback, License](#next-steps)**</br>
 <a href="#test">Something you should know</a> 
 
 ## Installation Instructions
