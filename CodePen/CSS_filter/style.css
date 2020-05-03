@@ -1,0 +1,76 @@
+img{
+    height: 100px;
+    margin: 20px;
+}
+#image2{
+    filter: blur(2px);
+}
+#image3{
+    filter: blur(5px);
+}
+
+#image5{
+    filter: brightness(50%);
+}
+#image6{
+    filter: brightness(280%);
+}
+
+#image8{
+    filter: contrast(20%);
+}
+#image9{
+    filter: contrast(280%);
+}
+
+#image11{
+    filter: grayscale(50%);
+}
+
+#image12{
+    filter: grayscale(280%);
+}
+
+
+#image14{
+    filter: drop-shadow(10px 10px 5px red);    
+}
+#image15{
+    filter: drop-shadow(0px 0px 20px black);
+}
+
+#image17{
+    filter: hue-rotate(50deg);
+}
+#image18{
+    filter: hue-rotate(300deg);
+}
+#image20{
+    filter: invert(20%);
+}
+#image21{
+    filter: invert(35%);
+}
+
+#image23{
+    filter: opacity(50%);
+}
+#image24{
+    filter: opacity(20%);
+}
+
+#image26{
+    filter: saturate(50%);
+}
+#image27{
+    filter: saturate(200%);
+}   
+
+
+#image29{
+    filter: sepia(50%);
+}
+#image30{
+    filter: sepia(100%);
+}
+
